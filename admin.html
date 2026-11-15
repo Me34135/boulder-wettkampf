@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Admin – Boulder-Wettkampf</title>
+<style>
+:root{--bg:#eef1f2;--card:#fff;--ink:#1c272d;--mute:#5f6f77;--line:#d3dadd;--flash:#e8a800;--red:#c0392b}
+@media (prefers-color-scheme:dark){:root{--bg:#13181b;--card:#1d2529;--ink:#eaf0f2;--mute:#94a4ac;--line:#33414a;--flash:#f2b81c;--red:#ef6c5d}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top) 0 calc(40px + env(safe-area-inset-bottom))}
+.wrap{max-width:720px;margin:0 auto;padding:0 16px}
+h1{font-size:1.5rem;font-weight:800;margin:20px 0 4px}
+h2{font-size:1.1rem;margin:22px 0 10px}
+button,select,input{font:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--flash);outline-offset:2px}
+.panel{background:var(--card);border:1px solid var(--line);border-left:6px solid var(--cat,var(--line));border-radius:14px;padding:14px;margin-bottom:12px}
+input:not([type=checkbox]):not([type=color]),select{min-height:44px;padding:0 10px;border:1.5px solid var(--line);border-radius:10px;background:var(--bg);width:100%}
+input[type=color]{width:48px;height:44px;border:1.5px solid var(--line);border-radius:10px;background:none;padding:2px;flex:none}
+.line{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.line>input:not([type=color]),.line>select{flex:1;min-width:0}
+.b{display:flex;gap:8px;align-items:flex-end;margin-bottom:8px;flex-wrap:wrap}
+.b label{display:flex;flex-direction:column;font-size:.8rem;color:var(--mute);gap:2px;width:84px}
+.b label.ph{width:72px;height:48px;border:1.5px dashed var(--line);border-radius:10px;overflow:hidden;align-items:center;justify-content:center;cursor:pointer;margin-left:auto}
+.ph img{width:100%;height:100%;object-fit:cover}
+button{min-height:44px;padding:0 14px;border:0;border-radius:10px;background:var(--ink);color:var(--bg);font-weight:700;cursor:pointer}
+button.ghost{background:transparent;color:var(--ink);border:1.5px solid var(--line)}
+button.dng{background:transparent;color:var(--red);border:1.5px solid var(--red)}
+.tg{display:flex;align-items:center;gap:10px;font-weight:650}
+.tg input{width:24px;height:24px}
+.hint{color:var(--mute);font-size:.9rem;margin:0 0 10px}
+#st{position:sticky;top:0;z-index:5;min-height:0;margin:0 -16px;padding:0 16px}
+#st div{padding:10px 14px;border-radius:0 0 12px 12px;font-weight:650;background:var(--ink);color:var(--bg)}
+#st div.bad{background:var(--red);color:#fff}
+.top{display:flex;justify-content:space-between;align-items:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="st" role="status"></div>
+  <div class="top"><h1>Admin</h1><button class="ghost" data-a="logout" id="lo" hidden>Abmelden</button></div>
+  <div id="app"></div>
+</div>
+<script>
+const SB = 'https://usiwuachkmzixosavkel.supabase.co';
+const KEY = 'sb_publishable_lWFB7mTv5QY0TIYaxm54BA_USrdZEHE';
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+let sess = null; try { sess = JSON.parse(sessionStorage.getItem('bw_adm')); } catch (e) {}
+const keep = () => { try { sess ? sessionStorage.setItem('bw_adm', JSON.stringify(sess)) : sessionStorage.removeItem('bw_adm'); } catch (e) {} };
+let cats = [], boulders = [], people = [], results = [], open = true, loaded = false, isAdmin = false, stT;
+
+function say(m, bad) { const s = $('#st'); s.innerHTML = m ? `<div class="${bad ? 'bad' : ''}">${esc(m)}</div>` : ''; clearTimeout(stT); if (m) stT = setTimeout(() => s.innerHTML = '', 3500); }
+
+async function token(body, grant) {
+  const r = await fetch(SB + '/auth/v1/token?grant_type=' + grant, { method: 'POST', headers: { apikey: KEY, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error('E-Mail oder Passwort stimmt nicht.');
+  sess = { access: j.access_token, refresh: j.refresh_token }; keep();
+}
+async function api(path, opt = {}, retry = true) {
+  const h = { apikey: KEY, ...(typeof opt.body === 'string' ? { 'Content-Type': 'application/json' } : {}), ...(sess ? { Authorization: 'Bearer ' + sess.access } : {}), ...(opt.headers || {}) };
+  const r = await fetch(SB + path, { ...opt, headers: h });
+  if (r.status === 401 && retry && sess) {
+    try { await token({ refresh_token: sess.refresh }, 'refresh_token'); } catch (e) { sess = null; keep(); render(); throw e; }
+    return api(path, opt, false);
+  }
+  if (!r.ok) throw new Error(await r.text());
+  return r.json().catch(() => null);
+}
+const patch = async (t, id, o) => {
+  const r = await api(`/rest/v1/${t}?id=eq.${id}`, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify(o) });
+  if (!r || !r.length) throw new Error('Keine Berechtigung');
+  return r;
+};
+const post = (t, o, rep) => api('/rest/v1/' + t, { method: 'POST', headers: { Prefer: rep ? 'return=representation' : 'return=minimal' }, body: JSON.stringify(o) });
+const del = p => api('/rest/v1/' + p, { method: 'DELETE' });
+
+async function load() {
+  const [a, b, c, d, e] = await Promise.all([
+    api('/rest/v1/categories?select=id,name,color,sort&order=sort,name'),
+    api('/rest/v1/boulders?select=id,category_id,number,factor,photo_url'),
+    api('/rest/v1/participants?select=id,name,category_id&order=name'),
+    api('/rest/v1/results?select=participant_id,boulder_id,flash&limit=5000'),
+    api('/rest/v1/settings?select=entries_open&id=eq.1')
+  ]);
+  cats = a || []; boulders = b || []; people = c || []; results = d || [];
+  open = e && e[0] ? e[0].entries_open : true; loaded = true;
+}
+async function reload() { try { await load(); } catch (e) { say('Laden fehlgeschlagen.', true); } render(); }
+async function init() {
+  if (!sess) return render();
+  try { await load(); isAdmin = !!(await patch('settings', 1, { entries_open: open }).catch(() => null)); }
+  catch (e) { sess = null; keep(); }
+  render();
+}
+
+function loginHtml() {
+  return `<div class="panel"><p class="hint">Nur für die Wettkampfleitung.</p>
+    <input id="em" type="email" placeholder="E-Mail" autocomplete="username" style="margin-bottom:8px">
+    <input id="pw" type="password" placeholder="Passwort" autocomplete="current-password" style="margin-bottom:10px">
+    <button data-a="login" style="width:100%">Anmelden</button></div>`;
+}
+
+function dash() {
+  const locked = people.length > 0, cn = id => (cats.find(c => c.id === id) || {}).name || '';
+  let h = `<h2>Einstellungen</h2><div class="panel"><label class="tg"><input type="checkbox" data-a="open" ${open ? 'checked' : ''}> Eintragen erlaubt</label>
+    <p class="hint" style="margin:8px 0 0">Ausgeschaltet können Teilnehmer weder Boulder eintragen noch sich neu anmelden.</p></div>`;
+  h += '<h2>Kategorien und Boulder</h2>';
+  if (locked) h += '<p class="hint">Kategorien und Boulder anlegen oder löschen ist gesperrt, solange Teilnehmer angemeldet sind. Nummern, Faktoren und Fotos kannst du weiter ändern. Zum Umbauen unten erst zurücksetzen.</p>';
+  else h += `<div class="panel"><div class="line"><input id="cn" placeholder="Name der Kategorie" maxlength="30"><input type="color" id="ccol" value="#238a5b" aria-label="Farbe"></div>
+    <div class="line"><input id="cc" type="number" min="1" max="40" value="10" aria-label="Anzahl Boulder" title="Anzahl Boulder"><input id="cs" type="number" min="0" value="1" aria-label="Startnummer" title="Startnummer"></div>
+    <p class="hint">Links die Anzahl der Boulder, rechts die Startnummer (bei 10 Boulder ab 11 entstehen die Nummern 11 bis 20).</p>
+    <button data-a="ccreate" style="width:100%">Kategorie anlegen</button></div>`;
+  cats.forEach(c => {
+    const bs = boulders.filter(b => b.category_id === c.id).sort((a, b) => a.number - b.number);
+    h += `<section class="panel" style="--cat:${c.color}"><div class="line"><input type="color" data-a="ccolor" data-id="${c.id}" value="${c.color}" aria-label="Farbe">
+      <input data-a="cname" data-id="${c.id}" value="${esc(c.name)}" maxlength="30">${locked ? '' : `<button class="dng" data-a="cdel" data-id="${c.id}">Löschen</button>`}</div>`;
+    bs.forEach(b => {
+      h += `<div class="b"><label>Nummer<input type="number" min="0" data-a="bnum" data-id="${b.id}" value="${b.number}"></label>
+        <label>Faktor<input type="number" min="0.25" max="10" step="0.25" data-a="bfac" data-id="${b.id}" value="${b.factor}"></label>
+        <label class="ph" title="Foto wählen">${b.photo_url ? `<img src="${esc(b.photo_url)}" alt="">` : '<span>Foto</span>'}<input type="file" accept="image/*" data-a="bphoto" data-id="${b.id}" hidden></label>
+        ${locked ? '' : `<button class="dng" data-a="bdel" data-id="${b.id}" aria-label="Boulder löschen">×</button>`}</div>`;
+    });
+    if (!locked) h += `<button class="ghost" data-a="badd" data-id="${c.id}">Boulder hinzufügen</button>`;
+    h += '</section>';
+  });
+  h += `<h2>Teilnehmer (${people.length})</h2>`;
+  if (!people.length) h += '<p class="hint">Noch niemand angemeldet.</p>';
+  people.forEach(p => {
+    h += `<div class="line"><input data-a="pname" data-id="${p.id}" value="${esc(p.name)}" maxlength="40" aria-label="Name">
+      <select data-a="pcat" data-id="${p.id}" aria-label="Kategorie">${cats.map(c => `<option value="${c.id}" ${c.id === p.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+      <button class="dng" data-a="pdel" data-id="${p.id}">Löschen</button></div>`;
+  });
+  h += `<h2>Export und Reset</h2><div class="panel"><p class="hint">Lade vor dem Zurücksetzen die Ergebnisse herunter, denn ein Reset lässt sich nicht rückgängig machen.</p>
+    <div class="line"><button class="ghost" data-a="csv">Ergebnisse als CSV</button></div>
+    <div class="line"><button class="dng" data-a="resetres">Nur Ergebnisse zurücksetzen</button></div>
+    <div class="line"><button class="dng" data-a="resetall">Alles zurücksetzen (Teilnehmer und Ergebnisse)</button></div>
+    <p class="hint" style="margin:0">Kategorien, Boulder, Fotos und Faktoren bleiben bei beiden erhalten.</p></div>`;
+  return h;
+}
+
+function render() {
+  $('#lo').hidden = !sess;
+  const v = $('#app');
+  if (!sess) v.innerHTML = loginHtml();
+  else if (!loaded) v.innerHTML = '<p class="hint">Lädt …</p>';
+  else if (!isAdmin) v.innerHTML = '<div class="panel"><p>Dieses Konto hat keine Admin-Rechte. Prüfe, ob die richtige E-Mail in der Datenbank als Admin eingetragen ist.</p></div>';
+  else v.innerHTML = dash();
+}
+
+async function shrink(file) {
+  let bmp; try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) { bmp = await createImageBitmap(file); }
+  const k = Math.min(1, 1000 / Math.max(bmp.width, bmp.height)), cv = document.createElement('canvas');
+  cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+  cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height);
+  return new Promise(r => cv.toBlob(r, 'image/jpeg', .82));
+}
+
+function csv() {
+  const nm = id => (cats.find(c => c.id === id) || {}).name || '';
+  const rows = [['Name', 'Kategorie', 'Boulder', 'Flash']];
+  results.forEach(r => {
+    const p = people.find(x => x.id === r.participant_id), b = boulders.find(x => x.id === r.boulder_id);
+    if (p && b) rows.push([p.name, nm(p.category_id), b.number, r.flash ? 'ja' : 'nein']);
+  });
+  const t = rows.map(r => r.map(v => { v = String(v); if (/^[=+\-@]/.test(v)) v = "'" + v; return '"' + v.replace(/"/g, '""') + '"'; }).join(';')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['\ufeff' + t], { type: 'text/csv' })); a.download = 'ergebnisse.csv'; a.click();
+}
+
+const errText = x => /23505|duplicate/i.test(x.message) ? 'Diese Nummer oder dieser Name ist schon vergeben.' : 'Das hat nicht geklappt: ' + (x.message.length < 80 ? x.message : 'Fehler beim Speichern.');
+
+document.addEventListener('change', async e => {
+  const t = e.target, a = t.dataset.a, id = t.dataset.id; if (!a) return;
+  try {
+    if (a === 'open') await patch('settings', 1, { entries_open: t.checked });
+    else if (a === 'cname') { if (!t.value.trim()) throw new Error('Name fehlt'); await patch('categories', id, { name: t.value.trim() }); }
+    else if (a === 'ccolor') await patch('categories', id, { color: t.value });
+    else if (a === 'bnum') await patch('boulders', id, { number: parseInt(t.value, 10) });
+    else if (a === 'bfac') await patch('boulders', id, { factor: parseFloat(t.value) });
+    else if (a === 'pname') { if (!t.value.trim()) throw new Error('Name fehlt'); await patch('participants', id, { name: t.value.trim() }); }
+    else if (a === 'pcat') {
+      if (!confirm('Die Ergebnisse dieser Person werden beim Wechsel der Kategorie gelöscht. Fortfahren?')) return reload();
+      await del(`results?participant_id=eq.${id}`); await patch('participants', id, { category_id: t.value });
+    } else if (a === 'bphoto') {
+      const f = t.files[0]; if (!f) return;
+      say('Foto wird hochgeladen …');
+      const name = `${id}-${Date.now()}.jpg`;
+      await api(`/storage/v1/object/boulder-fotos/${name}`, { method: 'POST', headers: { 'Content-Type': 'image/jpeg', 'x-upsert': 'true' }, body: await shrink(f) });
+      await patch('boulders', id, { photo_url: `${SB}/storage/v1/object/public/boulder-fotos/${name}` });
+    } else return;
+    say('Gespeichert');
+  } catch (x) { say(errText(x), true); }
+  reload();
+});
+
+document.addEventListener('click', async e => {
+  const b = e.target.closest('button[data-a]'); if (!b) return;
+  const a = b.dataset.a, id = b.dataset.id;
+  try {
+    if (a === 'login') { await token({ email: $('#em').value.trim(), password: $('#pw').value }, 'password'); return init(); }
+    if (a === 'logout') { sess = null; keep(); isAdmin = false; loaded = false; return render(); }
+    if (a === 'csv') return csv();
+    if (a === 'ccreate') {
+      const name = $('#cn').value.trim(), n = parseInt($('#cc').value, 10), s = parseInt($('#cs').value, 10);
+      if (!name || !(n >= 1 && n <= 40) || !(s >= 0)) return say('Bitte Name, Anzahl (1 bis 40) und Startnummer prüfen.', true);
+      const c = await post('categories', { name, color: $('#ccol').value, sort: cats.length }, true);
+      await post('boulders', Array.from({ length: n }, (_, i) => ({ category_id: c[0].id, number: s + i })));
+    } else if (a === 'cdel') { if (!confirm('Kategorie mit allen Bouldern löschen?')) return; await del(`categories?id=eq.${id}`); }
+    else if (a === 'badd') { const m = Math.max(0, ...boulders.filter(x => x.category_id === id).map(x => x.number)); await post('boulders', { category_id: id, number: m + 1 }); }
+    else if (a === 'bdel') { if (!confirm('Boulder löschen?')) return; await del(`boulders?id=eq.${id}`); }
+    else if (a === 'pdel') { if (!confirm('Teilnehmer samt Ergebnissen löschen?')) return; await del(`participants?id=eq.${id}`); }
+    else if (a === 'resetres') { if (!confirm('Alle Ergebnisse unwiderruflich löschen? Die Teilnehmer bleiben.')) return; await del('results?participant_id=not.is.null'); }
+    else if (a === 'resetall') { if (prompt('Alle Teilnehmer und Ergebnisse werden gelöscht. Zur Bestätigung RESET eingeben:') !== 'RESET') return; await del('participants?id=not.is.null'); }
+    else return;
+    say('Erledigt');
+  } catch (x) { say(a === 'login' ? x.message : errText(x), true); }
+  reload();
+});
+
+render();
+init();
+</script>
+</body>
+</html>
